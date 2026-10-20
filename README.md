@@ -28,6 +28,7 @@ If the agent forgets to mark something, you say so in chat and it fixes it.
 | `checklist_edit` | Changes an item's text (not its state) |
 | `checklist_list` | Full tree with ids and states, for when the digest is truncated |
 | `checklist_delete` | Deletes a list (by id or exact title) |
+| `checklist_rename` | Renames a list; titles stay unique within the session |
 | `checklist_template_save` | Saves a list as a reusable template for future sessions |
 
 Items are plain strings. **Two leading spaces per level** nest them:

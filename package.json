@@ -1,6 +1,6 @@
 {
   "name": "dsh-checklists",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Session-scoped checklists for DeepSeek Harness: the agent tracks work as a tree, the model always sees a compact digest, and a read-only sidebar tab mirrors it.",
   "type": "module",
   "main": "lib/index.js",

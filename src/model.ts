@@ -208,6 +208,50 @@ export function findItemById(
   return undefined
 }
 
+export type RenameCheck =
+  | { kind: 'ok'; list: Checklist; from: string; to: string }
+  | { kind: 'empty' }
+  | { kind: 'missing'; available: string[] }
+  | { kind: 'duplicate'; existing: string }
+
+/**
+ * Validate a checklist rename before applying it.
+ *
+ * Titles are how the user reads the sidebar and how `findList` resolves a
+ * reference, so a rename must never create a second list with the same title.
+ * Renaming a list to its own title (any case) is a no-op, not a conflict.
+ *
+ * @param lists - the session's checklists.
+ * @param ref - checklist id or exact title.
+ * @param nextTitle - the requested new title.
+ * @returns the resolved list, or the reason the rename cannot proceed.
+ */
+export function checkRename(
+  lists: readonly Checklist[],
+  ref: string,
+  nextTitle: string,
+): RenameCheck {
+  const to = nextTitle.trim()
+  if (to.length === 0) return { kind: 'empty' }
+
+  const list = findList(lists, ref)
+  if (!list) {
+    return { kind: 'missing', available: lists.map((entry) => `${entry.id} (${entry.title})`) }
+  }
+
+  const lower = to.toLowerCase()
+  if (list.title.trim().toLowerCase() === lower) {
+    return { kind: 'ok', list, from: list.title, to }
+  }
+
+  const clash = lists.find(
+    (entry) => entry !== list && entry.title.trim().toLowerCase() === lower,
+  )
+  if (clash) return { kind: 'duplicate', existing: clash.title }
+
+  return { kind: 'ok', list, from: list.title, to }
+}
+
 export interface NextItem {
   list: Checklist
   item: ChecklistItem

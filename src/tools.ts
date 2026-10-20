@@ -9,6 +9,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   buildItems,
+  checkRename,
   countItems,
   findList,
   flatten,
@@ -557,6 +558,72 @@ export function registerChecklistTools(
         }
 
         return { listId: list.id, title: list.title, added, total: countItems(list.items).total }
+      })
+    },
+  })))
+
+  ctx.effect(() => ctx.tools.register(defineTool({
+    name: 'checklist_rename',
+    description:
+      'Rename an existing checklist in the CURRENT session. Titles must be unique within the session. '
+      + 'Pass the id from checklist_list, or the exact current title.',
+    parameters: {
+      listId: {
+        type: 'string',
+        required: true,
+        description: 'Checklist id, or its exact current title.',
+      },
+      title: {
+        type: 'string',
+        required: true,
+        description: 'New title for the checklist.',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          listId: { type: 'string', required: true },
+          from: { type: 'string', required: true },
+          to: { type: 'string', required: true },
+        },
+      },
+      render: (_args, value) => {
+        const result = value as { from: string; to: string }
+        return [{ type: 'text', text: `Renamed "${result.from}" → "${result.to}".` }]
+      },
+    },
+    timeoutMs: 10_000,
+    async execute(args, exec) {
+      const input = args as { listId?: unknown; title?: unknown }
+      const sessionId = sessionOf(exec)
+
+      const ref = text(input.listId).trim()
+      const nextTitle = text(input.title).trim()
+      if (ref.length === 0) throw new Error('checklist_rename: listId must not be empty')
+      if (nextTitle.length === 0) throw new Error('checklist_rename: title must not be empty')
+      if (nextTitle.length > 120) throw new Error('checklist_rename: title is longer than 120 characters')
+
+      return store.update(sessionId, (doc) => {
+        const check = checkRename(doc.lists, ref, nextTitle)
+
+        if (check.kind === 'empty') throw new Error('checklist_rename: title must not be empty')
+        if (check.kind === 'missing') {
+          const available = check.available.join(', ')
+          throw new Error(
+            `checklist_rename: no checklist "${ref}" in this session. `
+            + `Available: ${available.length > 0 ? available : 'none'}`,
+          )
+        }
+        if (check.kind === 'duplicate') {
+          throw new Error(
+            `checklist_rename: a checklist titled "${check.existing}" already exists in this session`,
+          )
+        }
+
+        check.list.title = check.to
+        return { listId: check.list.id, from: check.from, to: check.to }
       })
     },
   })))

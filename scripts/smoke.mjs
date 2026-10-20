@@ -14,7 +14,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { buildItems, countItems, findItemById, findList, mintId, nextItem, resolveRef, toLines } from '../lib/model.js'
+import { buildItems, checkRename, countItems, findItemById, findList, mintId, nextItem, resolveRef, toLines } from '../lib/model.js'
 import { renderDigest } from '../lib/digest.js'
 import { ChecklistStore } from '../lib/store.js'
 import { toPublicState } from '../lib/state.js'
@@ -76,6 +76,22 @@ await check('findList resolves by id or exact title', () => {
   assert.equal(findList(lists, 'release 2.3').id, 'l2')
   assert.equal(findList(lists, 'Release'), undefined)
   assert.equal(findList(lists, '  '), undefined)
+})
+
+await check('checkRename rejects empties and collisions, allows a case-only no-op', () => {
+  const lists = [
+    { ...makeList('l1', ['a']), title: 'Release' },
+    { ...makeList('l2', ['b']), title: 'QA' },
+  ]
+  assert.equal(checkRename(lists, 'l1', '   ').kind, 'empty')
+  assert.equal(checkRename(lists, 'nope', 'X').kind, 'missing')
+  assert.equal(checkRename(lists, 'l1', 'qa').kind, 'duplicate')
+  assert.equal(checkRename(lists, 'l1', 'RELEASE').kind, 'ok')
+
+  const renamed = checkRename(lists, 'Release', 'Release 2.3')
+  assert.equal(renamed.kind, 'ok')
+  assert.equal(renamed.from, 'Release')
+  assert.equal(renamed.to, 'Release 2.3')
 })
 
 await check('findItemById finds nested items', () => {
