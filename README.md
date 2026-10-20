@@ -88,6 +88,8 @@ document degrades to an empty list instead of failing the turn.
 
 ## Sidebar tab
 
+![Checklist sidebar tab](assets/screenshot-1.png)
+
 Open the right sidebar, then the **guide** (`+`) and pick **Checklist**.
 
 | Action | How |
