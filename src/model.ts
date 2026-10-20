@@ -208,6 +208,30 @@ export function findItemById(
   return undefined
 }
 
+/**
+ * Remove one item (and its whole subtree) by exact id.
+ *
+ * Mutates the array in place, so callers must pass a document they own — the
+ * store's `update` already hands out a clone.
+ *
+ * @param items - sibling list to search, at any depth.
+ * @param id - exact item id.
+ * @returns the removed node, or `undefined` when no item has that id.
+ */
+export function removeItemById(
+  items: ChecklistItem[],
+  id: string,
+): ChecklistItem | undefined {
+  const index = items.findIndex((entry) => entry.id === id)
+  if (index >= 0) return items.splice(index, 1)[0]
+
+  for (const item of items) {
+    const removed = removeItemById(item.children, id)
+    if (removed) return removed
+  }
+  return undefined
+}
+
 export type RenameCheck =
   | { kind: 'ok'; list: Checklist; from: string; to: string }
   | { kind: 'empty' }

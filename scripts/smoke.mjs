@@ -14,7 +14,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { buildItems, checkRename, countItems, findItemById, findList, mintId, nextItem, resolveRef, toLines } from '../lib/model.js'
+import { buildItems, checkRename, countItems, findItemById, findList, mintId, nextItem, removeItemById, resolveRef, toLines } from '../lib/model.js'
 import { renderDigest } from '../lib/digest.js'
 import { ChecklistStore } from '../lib/store.js'
 import { toPublicState } from '../lib/state.js'
@@ -76,6 +76,16 @@ await check('findList resolves by id or exact title', () => {
   assert.equal(findList(lists, 'release 2.3').id, 'l2')
   assert.equal(findList(lists, 'Release'), undefined)
   assert.equal(findList(lists, '  '), undefined)
+})
+
+await check('removeItemById removes a nested item with its subtree', () => {
+  const items = buildItems(['a', '  b', '    c', 'd'])
+  const removed = removeItemById(items, 'i2')
+  assert.equal(removed.text, 'b')
+  assert.equal(countItems([removed]).total, 2)
+  assert.equal(items.length, 2)
+  assert.equal(items[0].children.length, 0)
+  assert.equal(removeItemById(items, 'nope'), undefined)
 })
 
 await check('checkRename rejects empties and collisions, allows a case-only no-op', () => {

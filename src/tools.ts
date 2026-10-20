@@ -17,6 +17,7 @@ import {
   isItemState,
   mintId,
   nextItem,
+  removeItemById,
   resolveRef,
   toLines,
   type ItemState,
@@ -624,6 +625,87 @@ export function registerChecklistTools(
 
         check.list.title = check.to
         return { listId: check.list.id, from: check.from, to: check.to }
+      })
+    },
+  })))
+
+  ctx.effect(() => ctx.tools.register(defineTool({
+    name: 'checklist_remove_item',
+    description:
+      'Remove one item — and everything nested under it — from a checklist in the CURRENT session. '
+      + 'Match it by id or exact text. Use it to drop work that no longer applies; '
+      + 'to change the item instead, use checklist_edit.',
+    parameters: {
+      listId: {
+        type: 'string',
+        required: true,
+        description: 'Checklist id, or its exact title.',
+      },
+      item: {
+        type: 'string',
+        required: true,
+        description: 'Item id or exact item text.',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          listId: { type: 'string', required: true },
+          itemId: { type: 'string', required: true },
+          text: { type: 'string', required: true },
+          removed: { type: 'integer', required: true },
+        },
+      },
+      render: (_args, value) => {
+        const result = value as { text: string; removed: number }
+        const extra = result.removed > 1 ? ` (+${result.removed - 1} nested)` : ''
+        return [{ type: 'text', text: `Removed "${result.text}"${extra}.` }]
+      },
+    },
+    timeoutMs: 10_000,
+    async execute(args, exec) {
+      const input = args as { listId?: unknown; item?: unknown }
+      const sessionId = sessionOf(exec)
+
+      const listRef = text(input.listId).trim()
+      const itemRef = text(input.item).trim()
+      if (listRef.length === 0) throw new Error('checklist_remove_item: listId must not be empty')
+      if (itemRef.length === 0) throw new Error('checklist_remove_item: item must not be empty')
+
+      return store.update(sessionId, (doc) => {
+        const list = findList(doc.lists, listRef)
+        if (!list) {
+          const available = doc.lists.map((entry) => `${entry.id} (${entry.title})`).join(', ')
+          throw new Error(
+            `checklist_remove_item: no checklist "${listRef}" in this session. `
+            + `Available: ${available.length > 0 ? available : 'none'}`,
+          )
+        }
+
+        const found = resolveRef([list], itemRef)
+        if (found.kind === 'ambiguous') {
+          const options = found.candidates.map((entry) => `${entry.item.id} (${entry.item.text})`).join(', ')
+          throw new Error(`checklist_remove_item: "${itemRef}" is ambiguous; use an id: ${options}`)
+        }
+        if (found.kind === 'miss') {
+          throw new Error(
+            `checklist_remove_item: no item "${itemRef}" in "${list.title}". Call checklist_list for ids.`,
+          )
+        }
+
+        const removed = removeItemById(list.items, found.hit.item.id)
+        if (!removed) {
+          throw new Error(`checklist_remove_item: item "${itemRef}" disappeared from "${list.title}"`)
+        }
+
+        return {
+          listId: list.id,
+          itemId: removed.id,
+          text: removed.text,
+          removed: countItems([removed]).total,
+        }
       })
     },
   })))
