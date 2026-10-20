@@ -1,0 +1,10 @@
+# dsh bundle patch: inserts this plugin into a profile's layer stack.
+# Install with:
+#   dsh plugin --profile dev add "C:/path/to/dsh-checklists"
+- insert:
+    - id: tool-checklist
+      name: dsh-checklists
+      # Optional overrides (uncomment and edit):
+      # config:
+      #   maxDigestLines: 12
+      #   pruneDays: 14

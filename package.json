@@ -1,0 +1,81 @@
+{
+  "name": "dsh-checklists",
+  "version": "0.3.2",
+  "description": "Session-scoped checklists for DeepSeek Harness: the agent tracks work as a tree, the model always sees a compact digest, and a read-only sidebar tab mirrors it.",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./client/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "client",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "license": "MIT",
+  "author": "manny333",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/manny333/dsh-checklists.git"
+  },
+  "homepage": "https://github.com/manny333/dsh-checklists#readme",
+  "bugs": {
+    "url": "https://github.com/manny333/dsh-checklists/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "checklist",
+    "cordis",
+    "agent"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "test": "vitest run",
+    "smoke": "node scripts/smoke.mjs",
+    "prepack": "npm run build",
+    "check": "npm run typecheck && npm run test && npm run build"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-host-webserver": ">=0.1.0-rc.1 <0.3.0",
+    "@deepseek-ai/dsh-system-prompt": ">=0.1.0-rc.1 <0.3.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.1 <0.3.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.7-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.7-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.1.7-rc.2",
+    "@types/node": "^22.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
