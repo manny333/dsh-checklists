@@ -34,11 +34,23 @@ export function emptyDoc(sessionId: string): SessionDoc {
   return { version: 1, sessionId, lists: [] }
 }
 
-/** Mint the next `<prefix>N` identifier that is not already in `used`. */
+/**
+ * Mint the next `<prefix>N` identifier.
+ *
+ * Numbers start after the highest one already in `used`, so a removed item's id
+ * is not handed to the next arrival: a freed `i3` stays dead instead of
+ * silently aliasing a different item. The high-water mark is not persisted, so
+ * removing the newest item and adding another can still reuse that id — fully
+ * closing the hole needs a stored counter, which means a schema change.
+ */
 export function mintId(prefix: string, used: ReadonlySet<string>): string {
-  let n = 1
-  while (used.has(`${prefix}${n}`)) n += 1
-  return `${prefix}${n}`
+  let highest = 0
+  for (const id of used) {
+    if (!id.startsWith(prefix)) continue
+    const suffix = Number(id.slice(prefix.length))
+    if (Number.isInteger(suffix) && suffix > highest) highest = suffix
+  }
+  return `${prefix}${highest + 1}`
 }
 
 /**
@@ -122,6 +134,16 @@ export function countItems(items: readonly ChecklistItem[]): ItemCounts {
   return { total, done }
 }
 
+/** Count items in one state across a tree. */
+export function countState(items: readonly ChecklistItem[], state: ItemState): number {
+  let total = 0
+  for (const item of items) {
+    if (item.state === state) total += 1
+    total += countState(item.children, state)
+  }
+  return total
+}
+
 export interface RefHit {
   list: Checklist
   item: ChecklistItem
@@ -141,7 +163,7 @@ export type RefResult =
  *
  * @param lists - the session's checklists.
  * @param ref - a model-supplied item id, text, or prefix.
- * @param listId - optional checklist id to search within.
+ * @param listId - optional checklist id **or exact title** to search within.
  * @returns the hit, the ambiguity, or a miss.
  */
 export function resolveRef(
@@ -152,7 +174,10 @@ export function resolveRef(
   const needles = ref.trim().toLowerCase()
   if (needles.length === 0) return { kind: 'miss' }
 
-  const scoped = listId ? lists.filter((list) => list.id === listId) : lists
+  // Accept a title here as well as an id: every other tool does, and a model
+  // that just created "Release 2.3" will pass that back, not "l1".
+  const scope = listId ? findList(lists, listId) : undefined
+  const scoped = listId ? (scope ? [scope] : []) : lists
   const entries: RefHit[] = []
   for (const list of scoped) {
     for (const { item } of flatten(list.items)) entries.push({ list, item })

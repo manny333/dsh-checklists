@@ -14,7 +14,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { buildItems, checkRename, countItems, findItemById, findList, mintId, nextItem, removeItemById, resolveRef, toLines } from '../lib/model.js'
+import { buildItems, checkRename, countItems, countState, findItemById, findList, mintId, nextItem, removeItemById, resolveRef, toLines } from '../lib/model.js'
+import { decideNudge } from '../lib/gate.js'
 import { renderDigest } from '../lib/digest.js'
 import { ChecklistStore } from '../lib/store.js'
 import { toPublicState } from '../lib/state.js'
@@ -38,9 +39,10 @@ const makeList = (id, lines) => ({
   items: buildItems(lines),
 })
 
-await check('mintId picks the first free suffix', () => {
+await check('mintId never reuses a freed id below the high-water mark', () => {
   assert.equal(mintId('i', new Set()), 'i1')
-  assert.equal(mintId('i', new Set(['i1', 'i3'])), 'i2')
+  assert.equal(mintId('i', new Set(['i1', 'i3'])), 'i4')
+  assert.equal(mintId('i', new Set(['i2'])), 'i3')
 })
 
 await check('buildItems nests by indentation', () => {
@@ -86,6 +88,37 @@ await check('removeItemById removes a nested item with its subtree', () => {
   assert.equal(items.length, 2)
   assert.equal(items[0].children.length, 0)
   assert.equal(removeItemById(items, 'nope'), undefined)
+})
+
+await check('resolveRef accepts a list title as the scope', () => {
+  const lists = [
+    { ...makeList('l1', ['a']), title: 'Release' },
+    { ...makeList('l2', ['a']), title: 'QA' },
+  ]
+  const byId = resolveRef(lists, 'a', 'l2')
+  const byTitle = resolveRef(lists, 'a', 'QA')
+  assert.equal(byId.kind, 'hit')
+  assert.equal(byTitle.kind, 'hit')
+  assert.equal(byTitle.hit.list.id, 'l2')
+  assert.equal(resolveRef(lists, 'a', 'nope').kind, 'miss')
+})
+
+await check('decideNudge only fires when work happened and was not recorded', () => {
+  assert.equal(decideNudge({ mutated: false, checklistWrite: false }, 3).nudge, false)
+  assert.equal(decideNudge({ mutated: true, checklistWrite: true }, 3).nudge, false)
+  assert.equal(decideNudge({ mutated: true, checklistWrite: false }, 0).nudge, false)
+
+  const yes = decideNudge({ mutated: true, checklistWrite: false }, 2)
+  assert.equal(yes.nudge, true)
+  assert.match(yes.reason, /2 item/)
+})
+
+await check('countState counts across the tree', () => {
+  const items = buildItems(['a', '  b', '  c'])
+  items[0].children[0].state = 'doing'
+  items[0].children[1].state = 'doing'
+  assert.equal(countState(items, 'doing'), 2)
+  assert.equal(countState(items, 'todo'), 1)
 })
 
 await check('checkRename rejects empties and collisions, allows a case-only no-op', () => {

@@ -18,6 +18,8 @@ import type { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 // Type-only import: the `ctx.webServer` augmentation.
 import type { WebServer } from '@deepseek-ai/dsh-host-webserver'
 import { renderDigest } from './digest.js'
+import { decideNudge, isChecklistWrite, MUTATING_TOOLS, NUDGE_ROUTE, type TurnActivity } from './gate.js'
+import { countState } from './model.js'
 import { serveProbe, PROBE_ROUTE } from './probe.js'
 import { serveItemUpdate, serveState, ITEM_ROUTE, STATE_ROUTE } from './route.js'
 import { ChecklistStore } from './store.js'
@@ -45,6 +47,14 @@ interface ScopeLike {
 
 interface AssemblyLike {
   scope?: object | undefined
+}
+
+interface GateEntry {
+  at: string
+  sessionId: string
+  nudge: boolean
+  reason: string
+  doing: number
 }
 
 /**
@@ -79,6 +89,55 @@ export function apply(ctx: Context, config: Config = {}): void {
   if (config.pruneDays !== 0) {
     void store.prune(config.pruneDays ?? 14).catch(() => undefined)
   }
+
+  // --- Turn-end gate (observation mode) ------------------------------------
+  // Watches one turn's tool activity and decides, as the turn closes, whether
+  // the checklist was left stale. This release only records the decision — the
+  // event is not exercised yet — so enabling `steer` is a one-line follow-up
+  // once the log shows it fires when it should.
+  const activity = new Map<string, TurnActivity>()
+  const gateLog: GateEntry[] = []
+
+  const events = ctx as unknown as {
+    on(name: string, listener: (payload: unknown) => void): () => void
+  }
+
+  ctx.effect(() => events.on('tools/result', (payload) => {
+    const event = payload as { exec?: { name?: unknown; agent?: { id?: unknown } } }
+    const toolName = event.exec?.name
+    const agentId = event.exec?.agent?.id
+    if (typeof toolName !== 'string' || typeof agentId !== 'string') return
+
+    const current = activity.get(agentId) ?? { mutated: false, checklistWrite: false }
+    if (MUTATING_TOOLS.has(toolName)) current.mutated = true
+    if (isChecklistWrite(toolName)) current.checklistWrite = true
+    activity.set(agentId, current)
+  }))
+
+  ctx.effect(() => events.on('agent/turn-stopping', (payload) => {
+    const event = payload as { agent?: { id?: unknown } }
+    const agentId = event.agent?.id
+    if (typeof agentId !== 'string') return
+
+    const current = activity.get(agentId) ?? { mutated: false, checklistWrite: false }
+    activity.set(agentId, { mutated: false, checklistWrite: false })
+
+    const doc = store.peek(agentId)
+    let doing = 0
+    if (doc) for (const list of doc.lists) doing += countState(list.items, 'doing')
+
+    const decision = decideNudge(current, doing)
+    if (!decision.nudge && process.env.DSH_CHECKLIST_DEBUG !== '1') return
+
+    gateLog.push({
+      at: new Date().toISOString(),
+      sessionId: agentId,
+      nudge: decision.nudge,
+      reason: decision.reason,
+      doing,
+    })
+    if (gateLog.length > 20) gateLog.shift()
+  }))
 
   let loggedScope = false
 
@@ -145,6 +204,27 @@ export function apply(ctx: Context, config: Config = {}): void {
         },
       }),
       'dsh-checklist: client probe route',
+    )
+
+    // What the turn-end gate decided, for verification before it steers.
+    webCtx.effect(
+      () => webCtx.webServer.register({
+        kind: 'exact',
+        path: NUDGE_ROUTE,
+        handler: (req, res) => {
+          const body = Buffer.from(
+            `${JSON.stringify({ mode: 'observe', entries: gateLog }, null, 2)}\n`,
+            'utf8',
+          )
+          res.writeHead(200, {
+            'content-type': 'application/json; charset=utf-8',
+            'content-length': String(body.byteLength),
+            'cache-control': 'no-store',
+          })
+          res.end(body)
+        },
+      }),
+      'dsh-checklist: nudge log route',
     )
   })
 }
