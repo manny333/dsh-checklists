@@ -50,7 +50,7 @@ From a local build or tarball:
 npm install
 npm run build
 npm pack
-dsh plugin --profile dev add ./dsh-checklists-0.4.0.tgz
+dsh plugin --profile dev add ./dsh-checklists-0.6.0.tgz
 dsh --profile dev --dump-config        # the tool-checklist row should appear
 ```
 
@@ -68,6 +68,7 @@ Override the defaults on the plugin's entry in the profile's `cordis.patch.yml`:
     maxDigestLines: 12      # lines of the injected digest
     maxItemsPerList: 200    # per-list item cap
     pruneDays: 14           # prune untouched sessions after N days (0 = never)
+    nudge: steer            # steer | observe | off — see "Turn-end gate"
     # storageRoot: "D:/data/dsh-checklists"
     # templates:
     #   my-flow: ["Step 1", "  Sub-step", "Step 2"]
@@ -113,7 +114,41 @@ the agent's edit.
 |---|---|---|
 | `/dsh-checklist/state` | GET | One session's state (read-only, `no-store`) |
 | `/dsh-checklist/item` | POST | Edit an item's text, with a conflict guard |
+| `/dsh-checklist/nudge` | GET | Recent turn-end gate decisions |
 | `/dsh-checklist/client-probe` | GET | Client load diagnostics |
+
+## Turn-end gate
+
+A checklist only helps while it is true. The gate closes the most common gap:
+a turn does real work, forgets to mark it, and the list is stale by the time you
+look at it.
+
+When a turn is about to close, the plugin checks exactly three things:
+
+1. Did the turn run a tool that changes the workspace (`bash`, `edit`, `write`, …)?
+2. Did it skip every checklist write?
+3. Is anything still marked `doing`?
+
+If all three hold, the agent gets one short steering message before the turn ends:
+
+> Before you finish: N checklist item(s) are still marked "doing". If you
+> completed any of them this turn, update them with checklist_check and say what
+> proves it. If not, leave them as they are — do not mark work you did not do.
+
+It never guesses **what** was completed — only that the bookkeeping was skipped.
+At most one nudge per turn, and none when the turn was pure conversation or the
+checklist already changed.
+
+Inspect recent decisions at `GET /dsh-checklist/nudge`:
+
+```jsonc
+{ "mode": "steer", "entries": [
+  { "source": "turn-stopping", "nudge": true, "steered": true,
+    "reason": "1 item(s) still doing after workspace changes", "doing": 1 }
+] }
+```
+
+`nudge: observe` records without interrupting; `nudge: off` disables the gate.
 
 ## Language
 

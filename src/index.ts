@@ -12,6 +12,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { randomUUID } from 'node:crypto'
 // Type-only import: pulls in the `ctx.systemPrompt` augmentation without a
 // runtime dependency on the package.
 import type { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
@@ -39,6 +40,13 @@ export interface Config {
   pruneDays?: number
   /** Extra templates merged over the built-in ones. */
   templates?: Record<string, string[]>
+  /**
+   * What the turn-end gate does when it finds a stale checklist.
+   * - `steer` (default): put a message in front of the agent before the turn ends.
+   * - `observe`: record the decision, never interrupt.
+   * - `off`: do not evaluate at all.
+   */
+  nudge?: 'steer' | 'observe' | 'off'
 }
 
 interface ScopeLike {
@@ -54,9 +62,40 @@ interface GateEntry {
   sessionId: string
   /** Which observation point produced this entry. */
   source: 'turn-stopping' | 'status'
+  /** What the gate was allowed to do in this run. */
+  mode: 'steer' | 'observe' | 'off'
   nudge: boolean
+  /** Whether the steering message actually reached the agent. */
+  steered: boolean
   reason: string
   doing: number
+}
+
+/** The slice of Agent the gate needs; the live object arrives in the event. */
+interface AgentLike {
+  id: string
+  steer?: (message: unknown) => void
+}
+
+/**
+ * Build the steering message.
+ *
+ * Model-facing, so English. It states the observation, asks for evidence, and
+ * explicitly allows leaving an item untouched — a gate that demanded progress
+ * would push the model into marking work it never did.
+ */
+function buildSteerMessage(doing: number): unknown {
+  return {
+    id: randomUUID(),
+    role: 'user',
+    content: [{
+      type: 'text',
+      text: `Before you finish: ${doing} checklist item(s) are still marked "doing". `
+        + 'If you completed any of them this turn, update them with checklist_check and say what '
+        + 'proves it. If not, leave them as they are — do not mark work you did not do.',
+    }],
+    source: { kind: 'user' },
+  }
 }
 
 /**
@@ -92,11 +131,11 @@ export function apply(ctx: Context, config: Config = {}): void {
     void store.prune(config.pruneDays ?? 14).catch(() => undefined)
   }
 
-  // --- Turn-end gate (observation mode) ------------------------------------
-  // Watches one turn's tool activity and decides, as the turn closes, whether
-  // the checklist was left stale. This release only records the decision — the
-  // event is not exercised yet — so enabling `steer` is a one-line follow-up
-  // once the log shows it fires when it should.
+  // --- Turn-end gate --------------------------------------------------------
+  // Watches one turn's tool activity and, as the turn closes, decides whether
+  // the checklist was left stale. In `steer` mode the agent gets a message
+  // before the turn is allowed to end; `observe` only records the decision.
+  const nudgeMode = config.nudge ?? 'steer'
   const activity = new Map<string, TurnActivity>()
   const gateLog: GateEntry[] = []
 
@@ -118,7 +157,8 @@ export function apply(ctx: Context, config: Config = {}): void {
     activity.set(agentId, current)
   }))
 
-  const evaluate = (agentId: string, source: 'turn-stopping' | 'status'): void => {
+  const evaluate = (agent: AgentLike, source: 'turn-stopping' | 'status'): void => {
+    const agentId = agent.id
     const current = activity.get(agentId) ?? { mutated: false, checklistWrite: false }
     activity.set(agentId, { mutated: false, checklistWrite: false })
 
@@ -127,32 +167,51 @@ export function apply(ctx: Context, config: Config = {}): void {
     if (doc) for (const list of doc.lists) doing += countState(list.items, 'doing')
 
     const decision = decideNudge(current, doing)
-    // Log every decision while the gate is in observe mode: an empty log must
-    // mean "the event never fired", never "the answer was no".
+    let steered = false
+    let reason = decision.reason
+
+    if (decision.nudge && nudgeMode === 'steer') {
+      try {
+        agent.steer?.(buildSteerMessage(doing))
+        steered = true
+      } catch (error) {
+        reason = `${reason}; steer failed: ${error instanceof Error ? error.message : String(error)}`
+      }
+    }
+
+    // Log every decision: an empty log must mean "the event never fired",
+    // never "the answer was no".
     gateLog.push({
       at: new Date().toISOString(),
       sessionId: agentId,
       source,
+      mode: nudgeMode,
       nudge: decision.nudge,
-      reason: decision.reason,
+      steered,
+      reason,
       doing,
     })
     if (gateLog.length > 20) gateLog.shift()
   }
 
   ctx.effect(() => events.on('agent/turn-stopping', (payload) => {
-    const event = payload as { agent?: { id?: unknown } }
-    if (typeof event.agent?.id === 'string') evaluate(event.agent.id, 'turn-stopping')
+    if (nudgeMode === 'off') return
+    const event = payload as { agent?: AgentLike }
+    if (typeof event.agent?.id === 'string') evaluate(event.agent, 'turn-stopping')
   }))
 
-  // Second observation point. `agent/status` → idle also marks a turn end, so
-  // keeping both in the log tells us which one the runtime actually delivers —
-  // and leaves the gate working if `turn-stopping` turns out not to reach a
-  // root listener.
+  // Fallback close signal. It evaluates only when `turn-stopping` left activity
+  // unconsumed, so it never duplicates a decision — but it still catches the
+  // turn if the primary event is ever missing.
   ctx.effect(() => events.on('agent/status', (payload) => {
-    const event = payload as { agent?: { id?: unknown }; status?: unknown }
+    if (nudgeMode === 'off') return
+    const event = payload as { agent?: AgentLike; status?: unknown }
     if (event.status !== 'idle') return
-    if (typeof event.agent?.id === 'string') evaluate(event.agent.id, 'status')
+    const agent = event.agent
+    if (!agent || typeof agent.id !== 'string') return
+    const current = activity.get(agent.id)
+    if (!current || (!current.mutated && !current.checklistWrite)) return
+    evaluate(agent, 'status')
   }))
 
   let loggedScope = false
@@ -229,7 +288,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         path: NUDGE_ROUTE,
         handler: (req, res) => {
           const body = Buffer.from(
-            `${JSON.stringify({ mode: 'observe', entries: gateLog }, null, 2)}\n`,
+            `${JSON.stringify({ mode: nudgeMode, entries: gateLog }, null, 2)}\n`,
             'utf8',
           )
           res.writeHead(200, {
