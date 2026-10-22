@@ -52,6 +52,8 @@ interface AssemblyLike {
 interface GateEntry {
   at: string
   sessionId: string
+  /** Which observation point produced this entry. */
+  source: 'turn-stopping' | 'status'
   nudge: boolean
   reason: string
   doing: number
@@ -99,13 +101,15 @@ export function apply(ctx: Context, config: Config = {}): void {
   const gateLog: GateEntry[] = []
 
   const events = ctx as unknown as {
-    on(name: string, listener: (payload: unknown) => void): () => void
+    on(name: string, listener: (...args: unknown[]) => void): () => void
   }
 
-  ctx.effect(() => events.on('tools/result', (payload) => {
-    const event = payload as { exec?: { name?: unknown; agent?: { id?: unknown } } }
-    const toolName = event.exec?.name
-    const agentId = event.exec?.agent?.id
+  ctx.effect(() => events.on('tools/result', (exec) => {
+    // `tools/result` is emitted as (execution, result); the execution carries
+    // the tool name and the calling agent.
+    const call = exec as { name?: unknown; agent?: { id?: unknown } } | undefined
+    const toolName = call?.name
+    const agentId = call?.agent?.id
     if (typeof toolName !== 'string' || typeof agentId !== 'string') return
 
     const current = activity.get(agentId) ?? { mutated: false, checklistWrite: false }
@@ -114,11 +118,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     activity.set(agentId, current)
   }))
 
-  ctx.effect(() => events.on('agent/turn-stopping', (payload) => {
-    const event = payload as { agent?: { id?: unknown } }
-    const agentId = event.agent?.id
-    if (typeof agentId !== 'string') return
-
+  const evaluate = (agentId: string, source: 'turn-stopping' | 'status'): void => {
     const current = activity.get(agentId) ?? { mutated: false, checklistWrite: false }
     activity.set(agentId, { mutated: false, checklistWrite: false })
 
@@ -127,16 +127,32 @@ export function apply(ctx: Context, config: Config = {}): void {
     if (doc) for (const list of doc.lists) doing += countState(list.items, 'doing')
 
     const decision = decideNudge(current, doing)
-    if (!decision.nudge && process.env.DSH_CHECKLIST_DEBUG !== '1') return
-
+    // Log every decision while the gate is in observe mode: an empty log must
+    // mean "the event never fired", never "the answer was no".
     gateLog.push({
       at: new Date().toISOString(),
       sessionId: agentId,
+      source,
       nudge: decision.nudge,
       reason: decision.reason,
       doing,
     })
     if (gateLog.length > 20) gateLog.shift()
+  }
+
+  ctx.effect(() => events.on('agent/turn-stopping', (payload) => {
+    const event = payload as { agent?: { id?: unknown } }
+    if (typeof event.agent?.id === 'string') evaluate(event.agent.id, 'turn-stopping')
+  }))
+
+  // Second observation point. `agent/status` → idle also marks a turn end, so
+  // keeping both in the log tells us which one the runtime actually delivers —
+  // and leaves the gate working if `turn-stopping` turns out not to reach a
+  // root listener.
+  ctx.effect(() => events.on('agent/status', (payload) => {
+    const event = payload as { agent?: { id?: unknown }; status?: unknown }
+    if (event.status !== 'idle') return
+    if (typeof event.agent?.id === 'string') evaluate(event.agent.id, 'status')
   }))
 
   let loggedScope = false
