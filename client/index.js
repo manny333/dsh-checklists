@@ -28,6 +28,8 @@ window.__ModuleLoader__.load({
     const COLOR = { done: '#3fb950', doing: '#d29922', blocked: '#f85149', todo: 'inherit' }
 
     const MUTED = { opacity: 0.72, fontSize: 13, padding: '10px 12px', lineHeight: 1.5 }
+    /** Stable empty map: read-only trees never collapse, so one shared object is enough. */
+    const EMPTY_COLLAPSED = {}
     const BUTTON = {
       background: 'transparent',
       border: 'none',
@@ -61,6 +63,9 @@ window.__ModuleLoader__.load({
         hideDoneHint: 'Hide or show completed items',
         copy: 'Copy',
         copyHint: 'Copy the checklist as markdown',
+        workspace: 'Workspace',
+        workspaceEmpty: 'No other session in this workspace has a checklist.',
+        loadingShort: 'Loading…',
         copied: '✓ Copied',
         copyFailed: 'Could not copy',
         noClipboard: 'Clipboard unavailable',
@@ -86,6 +91,9 @@ window.__ModuleLoader__.load({
         hideDoneHint: 'Ocultar o mostrar los ítems hechos',
         copy: 'Copiar',
         copyHint: 'Copiar el checklist como markdown',
+        workspace: 'Proyecto',
+        workspaceEmpty: 'Ninguna otra sesión de este proyecto tiene checklist.',
+        loadingShort: 'Cargando…',
         copied: '✓ Copiado',
         copyFailed: 'No se pudo copiar',
         noClipboard: 'Portapapeles no disponible',
@@ -293,6 +301,7 @@ window.__ModuleLoader__.load({
       const nodeKey = `${props.listId}/${item.id}`
       const isCollapsed = Boolean(props.collapsed[nodeKey])
       const counts = countTree(children)
+      const readOnly = Boolean(props.readOnly)
 
       const label = isEditing
         ? h('input', {
@@ -324,19 +333,19 @@ window.__ModuleLoader__.load({
         : h(
             'span',
             {
-              onDoubleClick: () => props.onStartEdit(item),
-              title: props.t('editHint'),
+              onDoubleClick: readOnly ? undefined : () => props.onStartEdit(item),
+              title: readOnly ? undefined : props.t('editHint'),
               style: {
                 textDecoration: done ? 'line-through' : 'none',
                 wordBreak: 'break-word',
-                cursor: 'text',
+                cursor: readOnly ? 'default' : 'text',
               },
             },
             item.text,
           )
 
       const chevron =
-        children.length > 0
+        children.length > 0 && !readOnly
           ? h(
               'button',
               {
@@ -480,6 +489,172 @@ window.__ModuleLoader__.load({
       return h('section', { style: { marginBottom: 12 } }, header, body)
     }
 
+    /**
+     * The workspace lens, below the session's own lists.
+     *
+     * Collapsed by default and lazy: nothing is fetched until the section is
+     * opened, so a session that never looks costs nothing. A 403 from the host
+     * means the profile disabled the lens, and the section disappears.
+     */
+    /**
+     * One sibling session's tree, read-only.
+     *
+     * No editing, no collapse state, no handlers: that list belongs to another
+     * session, and two writers would give it two truths.
+     */
+    function ReadOnlyTree(props) {
+      const state = props.state
+
+      if (!state || state.phase === 'loading') {
+        return h('div', { style: { opacity: 0.6, fontSize: 11, paddingLeft: 18 } }, props.t('loadingShort'))
+      }
+      if (state.phase === 'error') {
+        return h('div', { style: { opacity: 0.7, fontSize: 11, paddingLeft: 18 } }, state.message)
+      }
+
+      const lists = (state.data && state.data.lists) || []
+      if (lists.length === 0) {
+        return h('div', { style: { opacity: 0.55, fontSize: 11, paddingLeft: 18 } }, props.t('workspaceEmpty'))
+      }
+
+      const noop = () => {}
+      // One list: the entry header already carries its title, so repeating it
+      // inside the tree would say the same thing twice.
+      const showListTitles = lists.length > 1
+
+      return h(
+        'div',
+        { style: { paddingLeft: 18, paddingBottom: 4 } },
+        lists.map((list) =>
+          h(
+            'div',
+            { key: list.id },
+            showListTitles
+              ? h('div', { style: { fontSize: 11, opacity: 0.6, marginTop: 4 } }, list.title)
+              : null,
+            h(
+              'ul',
+              { style: { margin: 0, padding: 0 } },
+              (list.items || []).map((item) =>
+                h(Item, {
+                  key: item.id,
+                  item,
+                  depth: 0,
+                  t: props.t,
+                  readOnly: true,
+                  listId: `${props.sessionId}/${list.id}`,
+                  collapsed: EMPTY_COLLAPSED,
+                  onToggleNode: noop,
+                  editing: null,
+                  onStartEdit: noop,
+                  onDraft: noop,
+                  onCommit: noop,
+                  onCancel: noop,
+                }),
+              ),
+            ),
+          ),
+        ),
+      )
+    }
+
+    function WorkspaceSection(props) {
+      if (!props || props.state.phase === 'disabled') return null
+
+      const open = props.open
+      const state = props.state
+      const entries = state.phase === 'ready' ? state.data.checklists || [] : []
+
+      const header = h(
+        'button',
+        {
+          onClick: props.onToggle,
+          title: open ? props.t('collapse') : props.t('expand'),
+          style: {
+            ...BUTTON,
+            opacity: 0.75,
+            fontSize: 12,
+            display: 'flex',
+            alignItems: 'baseline',
+            gap: 5,
+            width: '100%',
+            textAlign: 'left',
+            padding: '4px 0',
+          },
+        },
+        h('span', { style: { fontSize: 10, opacity: 0.55 } }, open ? '▾' : '▸'),
+        h('span', null, props.t('workspace')),
+        state.phase === 'ready'
+          ? h('span', { style: { opacity: 0.55 } }, String(entries.length))
+          : null,
+      )
+
+      let body = null
+      if (open) {
+        if (state.phase === 'loading') {
+          body = h('div', { style: { opacity: 0.6, fontSize: 12 } }, props.t('loadingShort'))
+        } else if (state.phase === 'error') {
+          body = h('div', { style: { opacity: 0.7, fontSize: 12 } }, state.message)
+        } else if (state.phase === 'ready') {
+          body = entries.length === 0
+            ? h('div', { style: { opacity: 0.55, fontSize: 12 } }, props.t('workspaceEmpty'))
+            : h(
+                'ul',
+                { style: { margin: 0, padding: 0 } },
+                entries.map((entry) => {
+                  const treeOpen = Boolean(props.openTrees && props.openTrees[entry.sessionId])
+                  return h(
+                    'li',
+                    { key: entry.sessionId, style: { listStyle: 'none', margin: 0, padding: 0 } },
+                    h(
+                      'button',
+                      {
+                        onClick: () => props.onToggleTree(entry.sessionId),
+                        title: treeOpen ? props.t('collapse') : props.t('expand'),
+                        style: {
+                          ...BUTTON,
+                          opacity: 0.8,
+                          fontSize: 12,
+                          display: 'flex',
+                          gap: 6,
+                          width: '100%',
+                          textAlign: 'left',
+                          padding: '1px 0',
+                        },
+                      },
+                      h('span', { style: { fontSize: 9, opacity: 0.55 } }, treeOpen ? '▾' : '▸'),
+                      h(
+                        'span',
+                        { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                        entry.title,
+                      ),
+                      h(
+                        'span',
+                        { style: { opacity: 0.6, fontVariantNumeric: 'tabular-nums' } },
+                        `${entry.done}/${entry.total}`,
+                      ),
+                    ),
+                    treeOpen
+                      ? h(ReadOnlyTree, {
+                          state: props.trees ? props.trees[entry.sessionId] : undefined,
+                          t: props.t,
+                          sessionId: entry.sessionId,
+                        })
+                      : null,
+                  )
+                }),
+              )
+        }
+      }
+
+      return h(
+        'section',
+        { style: { marginTop: 10, borderTop: '1px solid rgba(127,127,127,0.2)', paddingTop: 6 } },
+        header,
+        body,
+      )
+    }
+
     function ChecklistBody(props) {
       const sessionId = props && props.sessionId
       const snapshot = useChecklistState(sessionId)
@@ -524,6 +699,49 @@ window.__ModuleLoader__.load({
         const timer = setTimeout(() => setNotice(null), 3000)
         return () => clearTimeout(timer)
       }, [notice])
+
+      const [workspaceOpen, setWorkspaceOpen] = React.useState(false)
+      const [workspace, setWorkspace] = React.useState({ phase: 'idle' })
+      const [openTrees, setOpenTrees] = React.useState({})
+      const [trees, setTrees] = React.useState({})
+
+      // Lazy on purpose: fetched the first time the section is opened, never on
+      // load, so the panel costs nothing until someone asks for the lens.
+      const toggleWorkspace = () => {
+        const next = !workspaceOpen
+        setWorkspaceOpen(next)
+        if (!next || workspace.phase !== 'idle' || !sessionId) return
+
+        setWorkspace({ phase: 'loading' })
+        fetch(`/dsh-checklist/workspace?session=${encodeURIComponent(sessionId)}`, { cache: 'no-store' })
+          .then((response) => {
+            if (response.status === 403) return { disabled: true }
+            if (!response.ok) throw new Error(`HTTP ${response.status}`)
+            return response.json()
+          })
+          .then((data) => setWorkspace(data && data.disabled ? { phase: 'disabled' } : { phase: 'ready', data }))
+          .catch((error) => setWorkspace({ phase: 'error', message: String((error && error.message) || error) }))
+      }
+
+      // Expanding one entry fetches that session's tree once. Nothing to
+      // invalidate: the lens never writes, so a cached tree stays true.
+      const toggleTree = (targetSessionId) => {
+        const next = !openTrees[targetSessionId]
+        setOpenTrees((current) => ({ ...current, [targetSessionId]: next }))
+        if (!next || trees[targetSessionId]) return
+
+        setTrees((current) => ({ ...current, [targetSessionId]: { phase: 'loading' } }))
+        fetch(`/dsh-checklist/state?session=${encodeURIComponent(targetSessionId)}`, { cache: 'no-store' })
+          .then((response) => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`)
+            return response.json()
+          })
+          .then((data) => setTrees((current) => ({ ...current, [targetSessionId]: { phase: 'ready', data } })))
+          .catch((error) => setTrees((current) => ({
+            ...current,
+            [targetSessionId]: { phase: 'error', message: String((error && error.message) || error) },
+          })))
+      }
 
       const startEdit = (item) => {
         const next = { id: item.id, original: item.text, draft: item.text }
@@ -594,6 +812,15 @@ window.__ModuleLoader__.load({
           { style: MUTED },
           h('div', { style: { fontWeight: 600, marginBottom: 4 } }, t('emptyTitle')),
           h('div', null, t('emptyHint')),
+          h(WorkspaceSection, {
+            t,
+            open: workspaceOpen,
+            state: workspace,
+            onToggle: toggleWorkspace,
+            trees,
+            openTrees,
+            onToggleTree: toggleTree,
+          }),
         )
       }
 
@@ -663,6 +890,15 @@ window.__ModuleLoader__.load({
             onCancel: cancelEdit,
           }),
         ),
+        h(WorkspaceSection, {
+          t,
+          open: workspaceOpen,
+          state: workspace,
+          onToggle: toggleWorkspace,
+          trees,
+          openTrees,
+          onToggleTree: toggleTree,
+        }),
       )
     }
 

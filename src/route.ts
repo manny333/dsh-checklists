@@ -10,9 +10,11 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { findItemById } from './model.js'
 import { toPublicState } from './state.js'
 import type { ChecklistStore } from './store.js'
+import { listWorkspaceChecklists } from './workspace.js'
 
 export const STATE_ROUTE = '/dsh-checklist/state'
 export const ITEM_ROUTE = '/dsh-checklist/item'
+export const WORKSPACE_ROUTE = '/dsh-checklist/workspace'
 
 /** Longest session id we will even look at; real ones are UUIDs. */
 const MAX_SESSION_ID = 200
@@ -20,6 +22,56 @@ const MAX_SESSION_ID = 200
 const MAX_BODY_BYTES = 16 * 1024
 /** Item text cap, matching `checklist_edit`. */
 const MAX_TEXT = 500
+
+/**
+ * Serve the workspace lens: checklists from other sessions in the same workspace.
+ *
+ * Deliberately separate from the session state route: this data never enters the
+ * agent's context unless a tool explicitly asks for it.
+ *
+ * @param req - the incoming request; must be GET.
+ * @param res - the response to write.
+ * @param store - the checklist store.
+ * @param limit - maximum entries returned, newest first.
+ * @param enabled - false when the profile turned the lens off.
+ */
+export async function serveWorkspace(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: ChecklistStore,
+  limit: number,
+  enabled: boolean,
+): Promise<void> {
+  if (req.method !== 'GET') {
+    res.writeHead(405, { allow: 'GET' })
+    res.end()
+    return
+  }
+  if (!enabled) {
+    sendJson(res, 403, { error: 'workspace view is disabled in this profile' })
+    return
+  }
+
+  let session: string | null
+  try {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    session = url.searchParams.get('session')
+  } catch {
+    sendJson(res, 400, { error: 'malformed request url' })
+    return
+  }
+
+  if (!session || session.length === 0 || session.length > MAX_SESSION_ID) {
+    sendJson(res, 400, { error: 'the session query parameter is required' })
+    return
+  }
+
+  try {
+    sendJson(res, 200, await listWorkspaceChecklists(store, session, limit))
+  } catch {
+    sendJson(res, 400, { error: 'invalid session id' })
+  }
+}
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = Buffer.from(`${JSON.stringify(body)}\n`, 'utf8')

@@ -23,10 +23,15 @@ import {
   type ItemState,
 } from './model.js'
 import type { ChecklistStore } from './store.js'
+import { listWorkspaceChecklists } from './workspace.js'
 
 export interface ToolsConfig {
   maxItemsPerList?: number
   templates?: Record<string, string[]>
+  /** `off` removes the workspace lens entirely; the other modes expose the tool. */
+  workspaceView?: 'off' | 'on-demand' | 'always'
+  /** Maximum sibling checklists the lens returns. */
+  workspaceViewLimit?: number
 }
 
 /** Ships with the plugin so a first run has something to instantiate. */
@@ -707,6 +712,76 @@ export function registerChecklistTools(
           removed: countItems([removed]).total,
         }
       })
+    },
+  })))
+
+  ctx.effect(() => ctx.tools.register(defineTool({
+    name: 'checklist_workspace',
+    description:
+      'List the checklists of OTHER sessions in the same workspace. Read-only; the current session is '
+      + 'excluded, and these lists never enter the prompt on their own. Use it when the user asks what '
+      + 'is pending in this project across sessions.',
+    parameters: {
+      limit: {
+        type: 'integer',
+        description: 'Maximum checklists to return, newest first (default 10).',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          workspaceTitle: { type: 'string' },
+          workspacePath: { type: 'string' },
+          checklists: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                sessionId: { type: 'string', required: true },
+                title: { type: 'string', required: true },
+                total: { type: 'integer', required: true },
+                done: { type: 'integer', required: true },
+                updatedAt: { type: 'integer', required: true },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => {
+        const view = value as {
+          workspaceTitle?: string
+          checklists: Array<{ title: string; done: number; total: number }>
+        }
+        if (view.checklists.length === 0) {
+          return [{ type: 'text', text: 'No other session in this workspace has a checklist.' }]
+        }
+        const lines = view.checklists.map((entry) => `· ${entry.title} — ${entry.done}/${entry.total}`)
+        return [{ type: 'text', text: lines.join('\n') }]
+      },
+    },
+    timeoutMs: 10_000,
+    async execute(args, exec) {
+      if ((config.workspaceView ?? 'on-demand') === 'off') {
+        throw new Error('checklist_workspace: the workspace lens is disabled in this profile')
+      }
+
+      const sessionId = sessionOf(exec)
+      const input = args as { limit?: unknown }
+      const requested = typeof input.limit === 'number' && Number.isFinite(input.limit)
+        ? Math.trunc(input.limit)
+        : undefined
+      const limit = Math.min(Math.max(1, requested ?? config.workspaceViewLimit ?? 10), 50)
+
+      const view = await listWorkspaceChecklists(store, sessionId, limit)
+      return {
+        ...(view.workspace?.title ? { workspaceTitle: view.workspace.title } : {}),
+        ...(view.workspace?.path ? { workspacePath: view.workspace.path } : {}),
+        checklists: view.checklists,
+      }
     },
   })))
 

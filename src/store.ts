@@ -47,6 +47,22 @@ export class ChecklistStore {
     return this.cache.get(sessionId)
   }
 
+  /**
+   * Last modification time of one session's checklist file.
+   *
+   * @param sessionId - the session to inspect.
+   * @returns epoch milliseconds, or undefined when that session has no file.
+   */
+  async modifiedAt(sessionId: string): Promise<number | undefined> {
+    try {
+      const info = await stat(this.fileFor(sessionId))
+      // Rounded: mtimeMs is a float, and the lens output declares it integer.
+      return Math.round(info.mtimeMs)
+    } catch {
+      return undefined
+    }
+  }
+
   /** Load one session (cache first, then disk). */
   async prime(sessionId: string): Promise<SessionDoc> {
     const cached = this.cache.get(sessionId)

@@ -22,7 +22,7 @@ import { renderDigest } from './digest.js'
 import { decideNudge, isChecklistWrite, MUTATING_TOOLS, NUDGE_ROUTE, type TurnActivity } from './gate.js'
 import { countState } from './model.js'
 import { serveProbe, PROBE_ROUTE } from './probe.js'
-import { serveItemUpdate, serveState, ITEM_ROUTE, STATE_ROUTE } from './route.js'
+import { serveItemUpdate, serveState, serveWorkspace, ITEM_ROUTE, STATE_ROUTE, WORKSPACE_ROUTE } from './route.js'
 import { ChecklistStore } from './store.js'
 import { registerChecklistTools } from './tools.js'
 
@@ -47,6 +47,15 @@ export interface Config {
    * - `off`: do not evaluate at all.
    */
   nudge?: 'steer' | 'observe' | 'off'
+  /**
+   * Workspace lens: viewing checklists from other sessions of the same project.
+   * - `on-demand` (default): available, but nothing is shown unless asked.
+   * - `always`: the sidebar section starts expanded.
+   * - `off`: no route, no tool.
+   */
+  workspaceView?: 'off' | 'on-demand' | 'always'
+  /** Maximum sibling checklists the lens returns (default 10). */
+  workspaceViewLimit?: number
 }
 
 interface ScopeLike {
@@ -124,6 +133,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   registerChecklistTools(ctx, store, {
     maxItemsPerList: config.maxItemsPerList,
     templates: config.templates,
+    workspaceView: config.workspaceView,
+    workspaceViewLimit: config.workspaceViewLimit,
   })
 
   // Opportunistic housekeeping: never blocks startup, never fails the plugin.
@@ -267,6 +278,25 @@ export function apply(ctx: Context, config: Config = {}): void {
         },
       }),
       'dsh-checklist: item route',
+    )
+
+    // Workspace lens: other sessions' checklists. Read-only, and never part of
+    // the prompt unless the agent explicitly asks for it.
+    webCtx.effect(
+      () => webCtx.webServer.register({
+        kind: 'exact',
+        path: WORKSPACE_ROUTE,
+        handler: (req, res) => {
+          void serveWorkspace(
+            req,
+            res,
+            store,
+            config.workspaceViewLimit ?? 10,
+            (config.workspaceView ?? 'on-demand') !== 'off',
+          )
+        },
+      }),
+      'dsh-checklist: workspace route',
     )
 
     // Diagnostics channel for the browser half; see src/probe.ts.

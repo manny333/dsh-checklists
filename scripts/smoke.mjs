@@ -10,7 +10,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -20,6 +20,7 @@ import { renderDigest } from '../lib/digest.js'
 import { ChecklistStore } from '../lib/store.js'
 import { toPublicState } from '../lib/state.js'
 import { serveItemUpdate, serveState } from '../lib/route.js'
+import { listWorkspaceChecklists, siblingSessionIds, workspaceKeyOf } from '../lib/workspace.js'
 
 const results = []
 async function check(name, fn) {
@@ -380,6 +381,53 @@ await check('item route edits, refuses conflicts, unknown ids and empty text', a
     assert.equal(res.status, 400)
   } finally {
     await rm(root, { recursive: true, force: true })
+  }
+})
+
+await check('workspace lens groups by directory and excludes the caller', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-ws-'))
+  const previous = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+
+  try {
+    const wsDir = join(home, 'sessions', '--test-ws--')
+    await mkdir(join(wsDir, 'session-a'), { recursive: true })
+    await mkdir(join(wsDir, 'session-b'), { recursive: true })
+    await mkdir(join(home, 'storages'), { recursive: true })
+    await writeFile(
+      join(home, 'storages', 'workspace.json'),
+      JSON.stringify({
+        tables: {
+          workspaces: {
+            w1: { path: '/tmp/proj', title: 'proj', sessionIds: ['session-a', 'session-b'] },
+          },
+        },
+      }),
+      'utf8',
+    )
+
+    assert.equal(await workspaceKeyOf('session-b'), '--test-ws--')
+    assert.deepEqual((await siblingSessionIds('--test-ws--')).sort(), ['session-a', 'session-b'])
+    assert.equal(await workspaceKeyOf('session-missing'), undefined)
+
+    const store = new ChecklistStore(join(home, 'storages', 'dsh-checklist'))
+    await store.update('session-b', (doc) => {
+      doc.lists.push({ id: 'l1', title: 'Other work', createdAt: '', items: buildItems(['x', 'y']) })
+    })
+
+    const view = await listWorkspaceChecklists(store, 'session-a', 10)
+    assert.equal(view.workspace.title, 'proj')
+    assert.equal(view.workspace.path, '/tmp/proj')
+    assert.equal(view.checklists.length, 1)
+    assert.equal(view.checklists[0].sessionId, 'session-b')
+    assert.equal(view.checklists[0].title, 'Other work')
+    assert.equal(view.checklists[0].total, 2)
+    assert.equal(view.checklists[0].done, 0)
+    assert.ok(Number.isInteger(view.checklists[0].updatedAt), 'updatedAt must be an integer')
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previous
+    await rm(home, { recursive: true, force: true })
   }
 })
 

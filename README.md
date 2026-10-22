@@ -30,6 +30,7 @@ If the agent forgets to mark something, you say so in chat and it fixes it.
 | `checklist_delete` | Deletes a list (by id or exact title) |
 | `checklist_remove_item` | Removes one item and everything nested under it |
 | `checklist_rename` | Renames a list; titles stay unique within the session |
+| `checklist_workspace` | Lists checklists from other sessions in the same workspace (read-only) |
 | `checklist_template_save` | Saves a list as a reusable template for future sessions |
 
 Items are plain strings. **Two leading spaces per level** nest them:
@@ -50,7 +51,7 @@ From a local build or tarball:
 npm install
 npm run build
 npm pack
-dsh plugin --profile dev add ./dsh-checklists-0.6.0.tgz
+dsh plugin --profile dev add ./dsh-checklists-0.7.0.tgz
 dsh --profile dev --dump-config        # the tool-checklist row should appear
 ```
 
@@ -69,6 +70,8 @@ Override the defaults on the plugin's entry in the profile's `cordis.patch.yml`:
     maxItemsPerList: 200    # per-list item cap
     pruneDays: 14           # prune untouched sessions after N days (0 = never)
     nudge: steer            # steer | observe | off — see "Turn-end gate"
+    workspaceView: on-demand   # off | on-demand | always — see "Workspace lens"
+    workspaceViewLimit: 10     # sibling checklists returned
     # storageRoot: "D:/data/dsh-checklists"
     # templates:
     #   my-flow: ["Step 1", "  Sub-step", "Step 2"]
@@ -115,6 +118,7 @@ the agent's edit.
 | `/dsh-checklist/state` | GET | One session's state (read-only, `no-store`) |
 | `/dsh-checklist/item` | POST | Edit an item's text, with a conflict guard |
 | `/dsh-checklist/nudge` | GET | Recent turn-end gate decisions |
+| `/dsh-checklist/workspace` | GET | Checklists of sibling sessions in the same workspace |
 | `/dsh-checklist/client-probe` | GET | Client load diagnostics |
 
 ## Turn-end gate
@@ -149,6 +153,30 @@ Inspect recent decisions at `GET /dsh-checklist/nudge`:
 ```
 
 `nudge: observe` records without interrupting; `nudge: off` disables the gate.
+
+## Workspace lens
+
+Checklists stay per session. The lens is a **read-only** way to see the
+checklists of other sessions in the same project — available on request, and
+never part of the prompt.
+
+| Mode | Behaviour |
+|---|---|
+| `on-demand` (default) | The tool works; the sidebar section starts collapsed |
+| `always` | The sidebar section starts expanded |
+| `off` | No tool, no route |
+
+Clicking an entry expands it into a read-only tree, fetched once from that
+session's own state route. Nothing there is editable — the lens can look, not
+touch.
+
+Membership comes from disk: a session belongs to the workspace directory that
+contains it under `$DSH_HOME/sessions/<workspace>/<sessionId>/`. The host's
+`workspace.json` is only used for a friendly title, because it is not always
+complete — on the machine this was written on it was missing a workspace.
+
+Nothing here is writable. To change another session's checklist, open that
+session: two writers on one list would give the list two truths.
 
 ## Language
 
